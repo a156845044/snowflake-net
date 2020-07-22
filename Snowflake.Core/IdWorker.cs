@@ -33,7 +33,16 @@ namespace Snowflake.Core
         //时间毫秒左移22位
         public const int TimestampLeftShift = SequenceBits + WorkerIdBits + DatacenterIdBits;
 
+        /// <summary>
+        /// 解决时钟回拨问题
+        /// 最大容忍时间, 单位毫秒, 即如果时钟只是回拨了该变量指定的时间, 那么等待相应的时间即可;
+        /// 考虑到sequence服务的高性能, 这个值不易过大
+        /// MaxBackwardMs = 5000
+        /// </summary>
+        private static int MaxBackwardMs { get; set; }
+
         private long _sequence = 0L;
+        //上一次生成的时间戳
         private long _lastTimestamp = -1L;
 
         public long WorkerId { get; protected set; }
@@ -44,7 +53,14 @@ namespace Snowflake.Core
             internal set { _sequence = value; }
         }
 
-        public IdWorker(long workerId, long datacenterId, long sequence = 0L)
+        /// <summary>
+        /// 
+        /// </summary>
+        /// <param name="workerId"></param>
+        /// <param name="datacenterId"></param>
+        /// <param name="sequence"></param>
+        /// <param name="maxBackwardMs">回拨等待时间，这个值不宜过大</param>
+        public IdWorker(long workerId, long datacenterId, long sequence = 0L, int maxBackwardMs = 5000)
         {
             // 如果超出范围就抛出异常
             if (workerId > MaxWorkerId || workerId < 0)
@@ -61,6 +77,7 @@ namespace Snowflake.Core
             WorkerId = workerId;
             DatacenterId = datacenterId;
             _sequence = sequence;
+            MaxBackwardMs = maxBackwardMs;
         }
 
         readonly object _lock = new Object();
@@ -71,7 +88,17 @@ namespace Snowflake.Core
                 var timestamp = TimeGen();
                 if (timestamp < _lastTimestamp)
                 {
-                    throw new Exception(string.Format("时间戳必须大于上一次生成ID的时间戳.  拒绝为{0}毫秒生成id", _lastTimestamp - timestamp));
+                    timestamp = TimeGen();
+                    long offset = _lastTimestamp - timestamp;//时间差
+                    if (offset <= MaxBackwardMs && offset > 0)
+                    {
+                        System.Threading.Thread.Sleep((int)offset);
+                    }
+                    timestamp = TimeGen();
+                    if (timestamp < _lastTimestamp)
+                    {
+                        throw new Exception(string.Format("时间戳必须大于上一次生成ID的时间戳.  拒绝为{0}毫秒生成id", _lastTimestamp - timestamp));
+                    }
                 }
 
                 //如果上次生成时间和当前时间相同,在同一毫秒内
